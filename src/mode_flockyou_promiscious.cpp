@@ -56,3 +56,40 @@ void flockyou_promiscious_setup() {
 }
 void flockyou_promiscious_loop()  { flockyou_promiscious_ns_loop(); }
 void flockyou_promiscious_stop()  { /* Stage 1: disable promiscuous cb, flush SPIFFS session */ }
+
+void flockyou_promiscious_get_stats(ModeStats* out) {
+    *out = ModeStats{};
+
+    // Mode 3 is promiscuous-only — no AP ever comes up, so leave
+    // apActive/apSsid/apIp at their zeroed defaults.
+
+    snprintf(out->tileLabel[0], sizeof(out->tileLabel[0]), "DETECTS");
+    snprintf(out->tileValue[0], sizeof(out->tileValue[0]), "%d", fyDetCount);
+
+    snprintf(out->tileLabel[1], sizeof(out->tileLabel[1]), "TIER");
+    snprintf(out->tileValue[1], sizeof(out->tileValue[1]), "%u", (unsigned)fyLastTargetTier);
+
+    snprintf(out->tileLabel[2], sizeof(out->tileLabel[2]), "CHANNEL");
+    snprintf(out->tileValue[2], sizeof(out->tileValue[2]), "%u", (unsigned)currentChannel);
+
+    out->logCount = 0;
+    if (fyDetCount == 0) {
+        snprintf(out->logLines[out->logCount], sizeof(out->logLines[0]),
+                 "scanning ch %u - no hits yet", (unsigned)currentChannel);
+        out->logCount++;
+    } else {
+        // Most recent entries are appended at the end of fyDet[]; show the
+        // last few as a mini detection log.
+        int shown = (fyDetCount < 3) ? fyDetCount : 3;
+        for (int i = 0; i < shown && out->logCount < ModeStats::kMaxLogLines; i++) {
+            const FYDetection& d = fyDet[fyDetCount - shown + i];
+            snprintf(out->logLines[out->logCount], sizeof(out->logLines[0]),
+                     "%s %s rssi=%d ch=%u", d.mac, tierLabel(d.tier), d.rssi, (unsigned)d.channel);
+            out->logCount++;
+        }
+    }
+    if (out->logCount < ModeStats::kMaxLogLines) {
+        snprintf(out->logLines[out->logCount], sizeof(out->logLines[0]), "no AP - promiscuous only");
+        out->logCount++;
+    }
+}

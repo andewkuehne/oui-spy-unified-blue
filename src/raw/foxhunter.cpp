@@ -7,11 +7,12 @@
 #include <NimBLEAdvertisedDevice.h>
 #include <esp_wifi.h>
 
-// Hardware configuration
-#define BUZZER_PIN 3
+// Hardware configuration - board-aware (see boards.h)
+#include "../boards.h"
+#define BUZZER_PIN OUISPY_BUZZER_PIN
 #define BUZZER_FREQ 2000
 #define BUZZER_DUTY 127
-#define LED_PIN 21
+#define LED_PIN OUISPY_LED_PIN
 
 // Network configuration
 const char* AP_SSID = "foxhunter";
@@ -1039,16 +1040,20 @@ void loop() {
         // Handle target detection messages (safe serial output)
         if (newTargetDetected) {
             newTargetDetected = false;
+            // CYD dashboard radar (no-op on the XIAO).
+            DisplayUI::radarPing(targetMAC.c_str(), currentRSSI, true);
             
             // Only play three same-tone beeps on FIRST detection of hunting session
             if (sessionFirstDetection) {
                 threeSameToneBeeps();
                 sessionFirstDetection = false;
                 Serial.println("TARGET ACQUIRED!");
+                DisplayUI::notifyDetection("ACQUIRED %ddBm", currentRSSI);
             } else if (firstDetection) {
                 // Silent reacquisition after loss
                 firstDetection = false;
                 Serial.println("TARGET REACQUIRED!");
+                DisplayUI::notifyDetection("REACQUIRED %ddBm", currentRSSI);
             }
         }
         
@@ -1064,11 +1069,13 @@ void loop() {
                 Serial.print("RSSI: ");
                 Serial.print(currentRSSI);
                 Serial.println(" dBm");
+                DisplayUI::logEvent("RSSI %d dBm", currentRSSI);
                 lastRSSIPrint = currentTime;
             }
         } else if (currentTime - lastTargetSeen >= 5000) {
             // Target lost - INSTANT LED OFF for maximum reactivity
             targetDetected = false;
+            DisplayUI::logEvent("target lost");
             firstDetection = true; // Reset for next detection
             
             // Turn off beep and LED immediately

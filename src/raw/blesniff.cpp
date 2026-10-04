@@ -35,10 +35,13 @@
 #include <stdio.h>
 
 // ---------------------------------------------------------------------------
-// Hardware - matches sibling modes (active-low LED on GPIO21).
+// Hardware - board-aware pins (see boards.h). Matches sibling modes
+// (active-low LED on GPIO21) on the Xiao ESP32-S3; maps to safe unused
+// GPIOs on a CYD board.
 // ---------------------------------------------------------------------------
-#define BLESNIFF_BUZZER_PIN 3
-#define BLESNIFF_LED_PIN    21
+#include "../boards.h"
+#define BLESNIFF_BUZZER_PIN OUISPY_BUZZER_PIN
+#define BLESNIFF_LED_PIN    OUISPY_LED_PIN
 
 static const ledc_channel_t BLESNIFF_BUZZER_CH    = LEDC_CHANNEL_0;
 static const ledc_timer_t   BLESNIFF_BUZZER_TIMER = LEDC_TIMER_0;

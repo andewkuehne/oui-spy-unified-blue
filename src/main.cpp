@@ -16,13 +16,17 @@
 #include <DNSServer.h>
 #include <Preferences.h>
 #include "modes.h"
+#include "boards.h"
+#include "display.h"
 
-// Hardware pins (shared across all modes)
-#define BUZZER_PIN 3
-#define LED_PIN 21
+// Hardware pins (shared across all modes) - board-aware, see boards.h
+#define BUZZER_PIN OUISPY_BUZZER_PIN
+#define LED_PIN OUISPY_LED_PIN
 
-// Boot button (GPIO0) - held during boot to return to selector menu
-#define BOOT_BUTTON_PIN 0
+// Boot button - held during boot to return to selector menu. -1 means the
+// board has no usable physical button, so only the touchscreen (CYD) can
+// force the selector.
+#define BOOT_BUTTON_PIN OUISPY_BOOT_BUTTON_PIN
 #define BOOT_HOLD_TIME 1500  // ms - hold boot button this long to force selector
 
 static Preferences prefs;
@@ -219,8 +223,9 @@ static void selectorBeep() {
 // Hold the BOOT button during startup to return to selector menu.
 // Beeps while waiting so you know it's detecting the hold.
 static bool checkBootButton() {
+    if (BOOT_BUTTON_PIN < 0) return false; // board has no usable physical button
     pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP);
-    
+
     // Quick check - is button even pressed?
     if (digitalRead(BOOT_BUTTON_PIN) == HIGH) {
         Serial.println("[OUI-SPY] Boot button not pressed");
@@ -487,7 +492,14 @@ void setup() {
     Serial.println("OUI SPY UNIFIED FIRMWARE v2.0");
     Serial.println("========================================");
     Serial.flush();
-    
+
+#ifdef OUISPY_CALIBRATION_BUILD
+    // Standalone touch/display calibration build: skip everything else and
+    // just run the 4-quadrant calibration screen forever.
+    DisplayUI::begin();
+    DisplayUI::runCalibrationLoop(); // never returns
+#endif
+
     // FIRST THING: Check if BOOT button (GPIO0) is being held
     // Hold BOOT for 1.5 seconds during startup to force selector menu.
     bool forceSelector = checkBootButton();
@@ -519,7 +531,12 @@ void setup() {
     Serial.flush();
     
     bootTime = millis();
-    
+
+    // TFT dashboard (CYD boards only; no-op on the XIAO build). Starts
+    // showing the boot menu immediately, before WiFi comes up, so the
+    // board is usable standalone without connecting to its AP.
+    DisplayUI::begin();
+
     if (forceSelector) {
         Serial.println("[OUI-SPY] Boot button override -> SELECTOR MODE");
         Serial.flush();
@@ -571,31 +588,37 @@ void setup() {
         Serial.println("[OUI-SPY] AP will be: snoopuntothem");
         Serial.flush();
         detector_setup();
+        DisplayUI::beginModeDashboard(1, "DETECTOR", "BLE alert on target devices");
     } else if (currentMode == 2) {
         Serial.println("[OUI-SPY] >>> STARTING FOXHUNTER (mode 2) <<<");
         Serial.println("[OUI-SPY] AP will be: foxhunter");
         Serial.flush();
         foxhunter_setup();
+        DisplayUI::beginModeDashboard(2, "FOXHUNTER", "RSSI proximity tracker");
     } else if (currentMode == 3) {
         Serial.println("[OUI-SPY] >>> STARTING FLOCK-YOU WIFI (mode 3) <<<");
         Serial.println("[OUI-SPY] Promiscuous 2.4 GHz sniffer, no AP, USB-CDC sensor");
         Serial.flush();
         flockyou_promiscious_setup();
+        DisplayUI::beginModeDashboard(3, "FLOCK-YOU WIFI", "Promiscuous 2.4GHz sniffer");
     } else if (currentMode == 4) {
         Serial.println("[OUI-SPY] >>> STARTING PCAP (mode 4) <<<");
         Serial.println("[OUI-SPY] AP will be: ouispy-pcap  (dashboard http://192.168.4.1)");
         Serial.flush();
         pcap_setup();
+        DisplayUI::beginModeDashboard(4, "PCAP", "Passive WiFi capture");
     } else if (currentMode == 5) {
         Serial.println("[OUI-SPY] >>> STARTING SKY SPY (mode 5) <<<");
         Serial.println("[OUI-SPY] No WiFi AP (BLE only)");
         Serial.flush();
         skyspy_setup();
+        DisplayUI::beginModeDashboard(5, "SKY SPY", "Drone Remote ID monitor");
     } else if (currentMode == 6) {
         Serial.println("[OUI-SPY] >>> STARTING BLE SNIFF (mode 6) <<<");
         Serial.println("[OUI-SPY] AP will be: ouispy-blesniff  (dashboard http://192.168.4.1)");
         Serial.flush();
         blesniff_setup();
+        DisplayUI::beginModeDashboard(6, "BLE SNIFF", "Passive BLE adverts capture");
     } else {
         Serial.printf("[OUI-SPY] ERROR: Unknown mode %d, defaulting to selector\n", currentMode);
         Serial.flush();
@@ -613,6 +636,7 @@ static unsigned long bootBtnStart = 0;
 static bool bootBtnActive = false;
 
 static void checkBootButtonLoop() {
+    if (BOOT_BUTTON_PIN < 0) return; // board has no usable physical button
     if (digitalRead(BOOT_BUTTON_PIN) == LOW) {
         if (!bootBtnActive) {
             // Button just pressed - start timing
@@ -648,15 +672,17 @@ void loop() {
     
     // Route to active mode's loop
     switch (currentMode) {
-        case 1: detector_loop(); break;
-        case 2: foxhunter_loop(); break;
-        case 3: flockyou_promiscious_loop(); break;
-        case 4: pcap_loop(); break;
-        case 5: skyspy_loop(); break;
-        case 6: blesniff_loop(); break;
+        case 1: detector_loop();             DisplayUI::tickModeDashboard(detector_get_stats);             break;
+        case 2: foxhunter_loop();            DisplayUI::tickModeDashboard(foxhunter_get_stats);            break;
+        case 3: flockyou_promiscious_loop();  DisplayUI::tickModeDashboard(flockyou_promiscious_get_stats); break;
+        case 4: pcap_loop();                 DisplayUI::tickModeDashboard(pcap_get_stats);                 break;
+        case 5: skyspy_loop();               DisplayUI::tickModeDashboard(skyspy_get_stats);               break;
+        case 6: blesniff_loop();             DisplayUI::tickModeDashboard(blesniff_get_stats);             break;
         default:
-            // Selector mode - web server handles everything
+            // Selector mode - web server handles everything, plus the
+            // on-device touch menu (no-op on boards with no TFT).
             selectorDNS.processNextRequest();  // Captive portal DNS
+            DisplayUI::tickBootMenu();
             // LED breathing animation
             {
                 static unsigned long lastLed = 0;

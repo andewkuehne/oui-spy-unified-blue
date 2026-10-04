@@ -10,6 +10,7 @@
 // ============================================================
 // CONFIG  (board defaults; override via platformio build_flags)
 // ============================================================
+#include "../boards.h"
 
 #ifdef BOARD_LILYGO_T_DONGLE_S3
 // LilyGO T-Dongle S3: ST7735 display + APA102 RGB (no buzzer).
@@ -23,10 +24,10 @@
 #define APA102_FLASH_B     0
 #define MIRROR_SERIAL      0   // GPIO43 is UART TX on this board
 #else
-// Seeed XIAO ESP32-S3
-#define BUZZER_PIN         3
-#define USE_BUZZER         1
-#define LED_PIN            21
+// Seeed XIAO ESP32-S3 / CYD - board-aware pins (see boards.h)
+#define BUZZER_PIN         OUISPY_BUZZER_PIN
+#define USE_BUZZER         OUISPY_HAS_BUZZER
+#define LED_PIN            OUISPY_LED_PIN
 #define USE_LED            1
 #define LED_ACTIVE_HIGH    0
 #define MIRROR_SERIAL      1
@@ -142,7 +143,7 @@ static const size_t SSID_KEYWORD_COUNT = sizeof(target_ssid_keywords) / sizeof(t
 #define PROCESS_DATA_FRAMES 1
 
 // Persistence
-#define MAX_DETECTIONS       200
+#define MAX_DETECTIONS       OUISPY_MAX_FY_DETECTIONS
 #define FY_SESSION_FILE      "/session.json"
 #define FY_SESSION_TMP       "/session.tmp"
 #define FY_PREV_FILE         "/prev_session.json"
@@ -1803,9 +1804,13 @@ static void fyBleStart() {
 
 void setup() {
   Serial.begin(115200);
+#if ARDUINO_USB_CDC_ON_BOOT
   // Crucial for USB-optional operation: without this, Serial.write() will
   // block indefinitely on an ESP32-S3 USB-CDC port when no host is attached.
+  // Only exists on boards whose Serial is the native USB-CDC (HWCDC) class;
+  // a CYD's classic ESP32 UART-over-CP2102 Serial has no such timeout to set.
   Serial.setTxTimeoutMs(0);
+#endif
   delay(300);
 
 #ifdef BOARD_LILYGO_T_DONGLE_S3

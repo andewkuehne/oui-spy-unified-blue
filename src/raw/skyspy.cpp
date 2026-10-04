@@ -15,11 +15,11 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
-// Buzzer configuration
-#define BUZZER_PIN 3  // GPIO3 (D2) - PWM capable pin on Xiao ESP32 S3
+// Buzzer/LED configuration - board-aware (see boards.h)
+#include "../boards.h"
+#define BUZZER_PIN OUISPY_BUZZER_PIN  // GPIO3 (D2) on Xiao ESP32 S3; unused-safe pin on CYD
 
-// LED configuration
-#define LED_PIN 21    // GPIO21 - Built-in orange LED on Xiao ESP32 S3 (inverted logic)
+#define LED_PIN OUISPY_LED_PIN    // GPIO21 on Xiao ESP32 S3 (inverted logic); unused-safe pin on CYD
 
 // Audio Configuration
 #define DETECT_FREQ 1000  // Detection alert - high pitch (faster beeps)

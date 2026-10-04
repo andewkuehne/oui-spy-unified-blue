@@ -41,3 +41,49 @@ void skyspy_setup() {
 }
 void skyspy_loop()  { skyspy_ns_loop(); }
 void skyspy_stop()  { /* Stage 1: stop BLE scan + WiFi action-frame capture */ }
+
+// Mode 5 has no web dashboard (serial/BLE Remote-ID monitor only), so this
+// mirrors the same uavs[] tracking table the serial JSON output is built
+// from: how many drones are currently in range, and the most recently seen
+// one's id + RSSI.
+void skyspy_get_stats(ModeStats* out) {
+    *out = ModeStats{};
+
+    unsigned long now = millis();
+    int droneCount = 0;
+    int latestIdx = -1;
+    unsigned long latestSeen = 0;
+    for (int i = 0; i < MAX_UAVS; i++) {
+        if (uavs[i].mac[0] == 0) continue;
+        if ((now - uavs[i].last_seen) < 7000UL) {
+            droneCount++;
+            if (latestIdx < 0 || uavs[i].last_seen > latestSeen) {
+                latestIdx = i;
+                latestSeen = uavs[i].last_seen;
+            }
+        }
+    }
+
+    snprintf(out->tileLabel[0], sizeof(out->tileLabel[0]), "DRONES");
+    snprintf(out->tileValue[0], sizeof(out->tileValue[0]), "%d", droneCount);
+
+    if (latestIdx >= 0) {
+        const id_data& uav = uavs[latestIdx];
+
+        snprintf(out->tileLabel[1], sizeof(out->tileLabel[1]), "RSSI");
+        snprintf(out->tileValue[1], sizeof(out->tileValue[1]), "%d dBm", uav.rssi);
+
+        char idbuf[24];
+        if (uav.uav_id[0]) {
+            snprintf(idbuf, sizeof(idbuf), "%s", uav.uav_id);
+        } else {
+            snprintf(idbuf, sizeof(idbuf), "%02x:%02x:%02x:%02x:%02x:%02x",
+                     uav.mac[0], uav.mac[1], uav.mac[2],
+                     uav.mac[3], uav.mac[4], uav.mac[5]);
+        }
+        snprintf(out->logLines[0], sizeof(out->logLines[0]), "last: %s", idbuf);
+    } else {
+        snprintf(out->logLines[0], sizeof(out->logLines[0]), "scanning for Remote ID...");
+    }
+    out->logCount = 1;
+}
