@@ -16,17 +16,17 @@ namespace {
 
 const ModeDef kModes[] = {
     { "detector",  "DETECTOR",       "BLE alert tool for specific devices",
-      detector_setup,             detector_loop,             detector_stop },
+      detector_setup,             detector_loop,             detector_stop,             detector_get_stats },
     { "foxhunter", "FOXHUNTER",      "RSSI proximity tracker",
-      foxhunter_setup,            foxhunter_loop,            foxhunter_stop },
+      foxhunter_setup,            foxhunter_loop,            foxhunter_stop,            foxhunter_get_stats },
     { "flock-wifi","FLOCK-YOU WIFI", "Promiscuous 2.4GHz surveillance sniffer",
-      flockyou_promiscious_setup, flockyou_promiscious_loop, flockyou_promiscious_stop },
+      flockyou_promiscious_setup, flockyou_promiscious_loop, flockyou_promiscious_stop, flockyou_promiscious_get_stats },
     { "pcap",      "PCAP",           "Passive WiFi packet capture (Wireshark-ready)",
-      pcap_setup,                 pcap_loop,                 pcap_stop },
+      pcap_setup,                 pcap_loop,                 pcap_stop,                 pcap_get_stats },
     { "skyspy",    "SKY SPY",        "Drone Remote ID monitor",
-      skyspy_setup,               skyspy_loop,               skyspy_stop },
+      skyspy_setup,               skyspy_loop,               skyspy_stop,               skyspy_get_stats },
     { "blesniff",  "BLE SNIFF",      "Passive BLE advertising capture (Wireshark-ready)",
-      blesniff_setup,             blesniff_loop,             blesniff_stop },
+      blesniff_setup,             blesniff_loop,             blesniff_stop,             blesniff_get_stats },
 };
 constexpr int kModeCount = sizeof(kModes) / sizeof(kModes[0]);
 

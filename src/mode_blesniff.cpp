@@ -60,3 +60,31 @@ void blesniff_stop() {
         if (s) s->stop();
     }
 }
+
+// Mirrors the same counters the web_dashboard /ws "status" JSON reports
+// (scan::total_adverts/adverts_per_sec + session_pcap::size) so the
+// on-device TFT dashboard matches what the browser shows.
+void blesniff_get_stats(ModeStats* out) {
+    *out = ModeStats{};
+
+    String ssid = WiFi.softAPSSID();
+    if (ssid.length() > 0) {
+        out->apActive = true;
+        snprintf(out->apSsid, sizeof(out->apSsid), "%s", ssid.c_str());
+        snprintf(out->apIp, sizeof(out->apIp), "%s", WiFi.softAPIP().toString().c_str());
+    }
+
+    snprintf(out->tileLabel[0], sizeof(out->tileLabel[0]), "ADVERTS");
+    snprintf(out->tileValue[0], sizeof(out->tileValue[0]), "%u", (unsigned)scan::total_adverts());
+
+    snprintf(out->tileLabel[1], sizeof(out->tileLabel[1]), "RATE");
+    snprintf(out->tileValue[1], sizeof(out->tileValue[1]), "%u/s", (unsigned)scan::adverts_per_sec());
+
+    snprintf(out->tileLabel[2], sizeof(out->tileLabel[2]), "PCAP");
+    snprintf(out->tileValue[2], sizeof(out->tileValue[2]), "%u KB",
+             (unsigned)(session_pcap::size() / 1024));
+
+    snprintf(out->logLines[0], sizeof(out->logLines[0]), "blesniff: %s",
+             session_pcap::state_name());
+    out->logCount = 1;
+}

@@ -17,19 +17,20 @@
 #include <Adafruit_NeoPixel.h>
 
 // ================================
-// Pin and Buzzer Definitions - Xiao ESP32 S3
+// Pin and Buzzer Definitions - board-aware (see boards.h)
 // ================================
-#define BUZZER_PIN 3   // GPIO3 (D2) for buzzer - good PWM pin on Xiao ESP32 S3
+#include "../boards.h"
+#define BUZZER_PIN OUISPY_BUZZER_PIN   // GPIO3 (D2) on Xiao ESP32 S3; unused-safe pin on CYD
 #define BUZZER_FREQ 2000  // Frequency in Hz
 #define BUZZER_DUTY 127  // 50% duty cycle for good volume without excessive power draw
 #define BEEP_DURATION 200  // Duration of each beep in ms
 #define BEEP_PAUSE 50  // Pause between beeps in ms (faster sequence)
-#define LED_PIN 21   // GPIO21 for onboard LED (inverted logic)
+#define LED_PIN OUISPY_LED_PIN   // GPIO21 on Xiao ESP32 S3 (inverted logic); unused-safe pin on CYD
 
 // ================================
 // NeoPixel Definitions - Xiao ESP32 S3
 // ================================
-#define NEOPIXEL_PIN 4   // GPIO4 (D3) for NeoPixel - confirmed safe pin on Xiao ESP32 S3
+#define NEOPIXEL_PIN OUISPY_NEOPIXEL_PIN   // GPIO4 (D3) on Xiao ESP32 S3; unused-safe pin on CYD
 #define NEOPIXEL_COUNT 1 // Number of NeoPixels (1 for single pixel)
 #define NEOPIXEL_BRIGHTNESS 50 // Brightness (0-255)
 #define NEOPIXEL_DETECTION_BRIGHTNESS 200 // Brightness during detection (0-255)
@@ -73,6 +74,39 @@ unsigned long normalRestartScheduled = 0; // When to do normal restart (0 = not 
 
 // Serial output synchronization - avoid concurrent writes
 volatile bool newMatchFound = false;
+
+// Scan health / "what's around": every advert the scan callback receives
+// bumps bleAdvertsHeard and lands in a small recently-heard table (unique by
+// MAC), so it's possible to tell "nothing matched" from "nothing received"
+// and to look up a device's real BLE address (CMD:NEARBY). Written from the
+// NimBLE task, read from the main loop - guarded by bleNearbyMux.
+volatile uint32_t bleAdvertsHeard = 0;
+struct NearbyDev { char mac[18]; char name[20]; int8_t rssi; uint32_t seen; };
+constexpr int kNearbyMax = 48;
+NearbyDev bleNearby[kNearbyMax];
+int bleNearbyCount = 0;
+portMUX_TYPE bleNearbyMux = portMUX_INITIALIZER_UNLOCKED;
+
+void bleNoteHeard(const String& mac, const std::string& name, int rssi) {
+    bleAdvertsHeard++;
+    const uint32_t now = millis();
+    portENTER_CRITICAL(&bleNearbyMux);
+    int slot = -1, oldest = 0;
+    for (int i = 0; i < bleNearbyCount; i++) {
+        if (strcmp(bleNearby[i].mac, mac.c_str()) == 0) { slot = i; break; }
+        if (bleNearby[i].seen < bleNearby[oldest].seen) oldest = i;
+    }
+    if (slot < 0) {
+        slot = bleNearbyCount < kNearbyMax ? bleNearbyCount++ : oldest;
+        snprintf(bleNearby[slot].mac, sizeof(bleNearby[slot].mac), "%s", mac.c_str());
+        bleNearby[slot].name[0] = 0;
+    }
+    if (!name.empty())
+        snprintf(bleNearby[slot].name, sizeof(bleNearby[slot].name), "%s", name.c_str());
+    bleNearby[slot].rssi = (int8_t)rssi;
+    bleNearby[slot].seen = now;
+    portEXIT_CRITICAL(&bleNearbyMux);
+}
 String detectedMAC = "";
 int detectedRSSI = 0;
 String matchedFilter = "";
@@ -169,7 +203,7 @@ std::vector<DeviceAlias> deviceAliases;
 #define BLE_SESSION_FILE     "/ble_session.json"
 #define BLE_SESSION_TMP      "/ble_session.tmp"
 #define BLE_PREV_FILE        "/ble_prev_session.json"
-#define BLE_MAX_DETECTIONS   256
+#define BLE_MAX_DETECTIONS   OUISPY_MAX_BLE_DETECTIONS
 #define BLE_AUTOSAVE_MS      60000
 #define BLE_CMD_BUF_LEN      160
 
@@ -560,7 +594,29 @@ void saveWiFiCredentials() {
 // MAC Address Utility Functions
 // ================================
 void normalizeMACAddress(String& mac) {
+    mac.trim();
     mac.toLowerCase();
+    // Accept the common ways a MAC/OUI gets written or pasted -
+    // aa:bb:cc, aa-bb-cc, aabbcc, aabb.ccdd.eeff - by stripping separators
+    // and, when what's left is exactly an OUI (6) or full MAC (12) worth of
+    // hex, rebuilding the canonical colon form. Anything else is left for
+    // isValidMAC() to reject.
+    String hex;
+    bool onlyHexAndSeparators = true;
+    for (unsigned i = 0; i < mac.length(); i++) {
+        char c = mac.charAt(i);
+        if (isxdigit((unsigned char)c)) hex += c;
+        else if (c != ':' && c != '-' && c != '.' && c != ' ') onlyHexAndSeparators = false;
+    }
+    if (onlyHexAndSeparators && (hex.length() == 6 || hex.length() == 12)) {
+        String out;
+        for (unsigned i = 0; i < hex.length(); i += 2) {
+            if (i) out += ':';
+            out += hex.substring(i, i + 2);
+        }
+        mac = out;
+        return;
+    }
     mac.replace("-", ":");
     mac.replace(" ", "");
 }
@@ -1426,12 +1482,95 @@ static void bleCmdClearLive() {
     bleReplyOk();
 }
 
+// CMD:ADD_MAC <mac> - add a full-MAC filter over USB serial and persist it,
+// no web UI needed. Any common MAC spelling is accepted (see
+// normalizeMACAddress).
+static void bleCmdAddMac(String mac) {
+    mac.trim();
+    if (!isValidMAC(mac)) { bleReplyErr("bad mac"); return; }
+    normalizeMACAddress(mac);
+    if (mac.length() != 17) { bleReplyErr("need full mac, not oui"); return; }
+    mac.toUpperCase();
+    for (const TargetFilter& f : targetFilters) {
+        if (f.type == FT_FULL_MAC && f.identifier.equalsIgnoreCase(mac)) {
+            bleReplyErr("already present");
+            return;
+        }
+    }
+    // The BLE callback task iterates targetFilters; pause the scan while the
+    // vector may reallocate (the scan loop restarts it every 3s).
+    if (pBLEScan) pBLEScan->stop();
+    TargetFilter filter;
+    filter.identifier = mac;
+    filter.description = "MAC: " + mac;
+    filter.isFullMAC = true;
+    filter.type = FT_FULL_MAC;
+    targetFilters.push_back(filter);
+    saveConfiguration();
+    Serial.print(F("ADDED ")); Serial.println(mac);
+    bleReplyOk();
+}
+
+// CMD:NEARBY - every BLE device heard recently, newest first:
+// mac, rssi, seconds since last heard, advertised name.
+static void bleCmdNearby() {
+    NearbyDev snap[kNearbyMax];
+    portENTER_CRITICAL(&bleNearbyMux);
+    const int n = bleNearbyCount;
+    memcpy(snap, bleNearby, sizeof(NearbyDev) * n);
+    portEXIT_CRITICAL(&bleNearbyMux);
+    std::sort(snap, snap + n, [](const NearbyDev& a, const NearbyDev& b) { return a.seen > b.seen; });
+    const uint32_t now = millis();
+    Serial.printf("BEGIN NEARBY %d (adverts heard: %lu)\n", n, (unsigned long)bleAdvertsHeard);
+    for (int i = 0; i < n; i++) {
+        Serial.printf("%s %4d dBm %4lus %s\n", snap[i].mac, snap[i].rssi,
+                      (unsigned long)((now - snap[i].seen) / 1000), snap[i].name);
+    }
+    Serial.println(F("END NEARBY"));
+}
+
+// CMD:REMOVE_MAC <mac> - drop a MAC/OUI filter added via ADD_MAC or the
+// web UI, and persist.
+static void bleCmdRemoveMac(String mac) {
+    mac.trim();
+    if (!isValidMAC(mac)) { bleReplyErr("bad mac"); return; }
+    normalizeMACAddress(mac);
+    if (pBLEScan) pBLEScan->stop();  // see bleCmdAddMac
+    const size_t before = targetFilters.size();
+    targetFilters.erase(
+        std::remove_if(targetFilters.begin(), targetFilters.end(),
+            [&](const TargetFilter& f) {
+                if (f.type != FT_FULL_MAC && f.type != FT_MAC_PREFIX) return false;
+                String id = f.identifier;
+                normalizeMACAddress(id);
+                return id == mac;
+            }),
+        targetFilters.end());
+    if (targetFilters.size() == before) { bleReplyErr("not found"); return; }
+    saveConfiguration();
+    Serial.print(F("REMOVED ")); Serial.println(mac);
+    bleReplyOk();
+}
+
+// CMD:LIST_FILTERS - print every configured filter.
+static void bleCmdListFilters() {
+    Serial.println(F("BEGIN FILTERS"));
+    for (const TargetFilter& f : targetFilters) {
+        Serial.print(f.identifier); Serial.print(F("  ")); Serial.println(f.description);
+    }
+    Serial.println(F("END FILTERS"));
+}
+
 static void bleHandleCmdLine(const String& raw) {
     String line = raw; line.trim();
     if (!line.startsWith("CMD:") && !line.startsWith("cmd:")) return;
     String body = line.substring(4); body.trim(); body.toUpperCase();
 
-    if      (body == "DUMP_PREV")  { bleDumpPrev(); }
+    if      (body.startsWith("ADD_MAC ")) { bleCmdAddMac(body.substring(8)); }
+    else if (body == "LIST_FILTERS")      { bleCmdListFilters(); }
+    else if (body == "NEARBY")            { bleCmdNearby(); }
+    else if (body.startsWith("REMOVE_MAC ")) { bleCmdRemoveMac(body.substring(11)); }
+    else if (body == "DUMP_PREV")  { bleDumpPrev(); }
     else if (body == "DUMP_LIVE")  { bleDumpLive(); }
     else if (body == "CLEAR_PREV") { bleCmdClearPrev(); }
     else if (body == "CLEAR_LIVE") { bleCmdClearLive(); }
@@ -3068,6 +3207,80 @@ String generateConfigHTML() {
     return html;
 }
 
+// Streams the config page straight out of the getConfigHTML() literal in
+// chunks, substituting the same placeholders generateConfigHTML() does as it
+// goes. generateConfigHTML() needs the whole ~53KB page as a String plus a
+// reallocation per replace() plus AsyncWebServer's own copy - fine with the
+// XIAO's PSRAM, but on boards without PSRAM (CYD) with WiFi+BLE up there is
+// no contiguous block that large, and the page came back empty.
+void sendConfigHTML(AsyncWebServerRequest* request) {
+    struct Seg { const char* lit; size_t len; int sub; };  // sub = -1: literal
+    struct State {
+        std::vector<String> subs;
+        std::vector<Seg> segs;
+        size_t seg = 0, off = 0;
+    };
+    auto st = std::make_shared<State>();
+
+    String ouiValues, macValues;
+    for (const TargetFilter& filter : targetFilters) {
+        String& dst = filter.isFullMAC ? macValues : ouiValues;
+        if (dst.length() > 0) dst += "\n";
+        dst += filter.identifier;
+    }
+    const char* tokens[] = {
+        "AA:BB:CC\nDD:EE:FF\n11:22:33",
+        "AA:BB:CC:12:34:56\nDD:EE:FF:ab:cd:ef\n11:22:33:44:55:66",
+        "%ASCII_ART%", "%OUI_VALUES%", "%MAC_VALUES%",
+        "%BUZZER_CHECKED%", "%LED_CHECKED%", "%AP_SSID%", "%AP_PASSWORD%",
+    };
+    st->subs = {
+        generateRandomOUI() + "\n" + generateRandomOUI() + "\n" + generateRandomOUI(),
+        generateRandomMAC() + "\n" + generateRandomMAC() + "\n" + generateRandomMAC(),
+        "",  // ASCII art stays out - memory, same as generateConfigHTML()
+        ouiValues, macValues,
+        buzzerEnabled ? "checked" : "", ledEnabled ? "checked" : "",
+        AP_SSID, AP_PASSWORD,
+    };
+    const size_t nTokens = sizeof(tokens) / sizeof(tokens[0]);
+
+    // Split the page into literal runs and substitutions (all occurrences,
+    // like String::replace).
+    const char* p = getConfigHTML();
+    while (*p) {
+        const char* best = nullptr;
+        size_t bestTok = 0;
+        for (size_t t = 0; t < nTokens; t++) {
+            const char* hit = strstr(p, tokens[t]);
+            if (hit && (!best || hit < best)) { best = hit; bestTok = t; }
+        }
+        if (!best) {
+            st->segs.push_back({p, strlen(p), -1});
+            break;
+        }
+        if (best > p) st->segs.push_back({p, (size_t)(best - p), -1});
+        st->segs.push_back({nullptr, 0, (int)bestTok});
+        p = best + strlen(tokens[bestTok]);
+    }
+
+    AsyncWebServerResponse* response = request->beginChunkedResponse("text/html",
+        [st](uint8_t* buf, size_t maxLen, size_t) -> size_t {
+            size_t n = 0;
+            while (n < maxLen && st->seg < st->segs.size()) {
+                const Seg& sg = st->segs[st->seg];
+                const char* src = sg.sub < 0 ? sg.lit : st->subs[sg.sub].c_str();
+                const size_t len = sg.sub < 0 ? sg.len : st->subs[sg.sub].length();
+                const size_t take = std::min(maxLen - n, len - st->off);
+                memcpy(buf + n, src + st->off, take);
+                n += take;
+                st->off += take;
+                if (st->off >= len) { st->seg++; st->off = 0; }
+            }
+            return n;
+        });
+    request->send(response);
+}
+
 // ================================
 // WiFi and Web Server Functions
 // ================================
@@ -3117,10 +3330,11 @@ void startConfigMode() {
     // Setup web server routes
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
         lastConfigActivity = millis();
-        request->send(200, "text/html", generateConfigHTML());
+        sendConfigHTML(request);
     });
     
     server.on("/save", HTTP_POST, [](AsyncWebServerRequest *request) {
+        String rejectedEntries;  // lines that are not a valid OUI/MAC
         lastConfigActivity = millis();
         
         if (isSerialConnected()) {
@@ -3161,7 +3375,13 @@ void startConfigMode() {
                     oui.trim();
                     oui.replace("\r", ""); // Remove carriage returns
                     
+                    if (oui.length() > 0 && !isValidMAC(oui)) {
+                        if (rejectedEntries.length()) rejectedEntries += ", ";
+                        rejectedEntries += oui;
+                    }
                     if (oui.length() > 0 && isValidMAC(oui)) {
+                        normalizeMACAddress(oui);
+                        oui.toUpperCase();
                         TargetFilter filter;
                         filter.identifier = oui;
                         filter.description = "OUI: " + oui;
@@ -3197,7 +3417,13 @@ void startConfigMode() {
                     mac.trim();
                     mac.replace("\r", ""); // Remove carriage returns
                     
+                    if (mac.length() > 0 && !isValidMAC(mac)) {
+                        if (rejectedEntries.length()) rejectedEntries += ", ";
+                        rejectedEntries += mac;
+                    }
                     if (mac.length() > 0 && isValidMAC(mac)) {
+                        normalizeMACAddress(mac);
+                        mac.toUpperCase();
                         TargetFilter filter;
                         filter.identifier = mac;
                         filter.description = "MAC: " + mac;
@@ -3304,6 +3530,7 @@ void startConfigMode() {
         <h1>Configuration Saved</h1>
         <div class="success">
             <p><strong>Saved )html" + String(targetFilters.size()) + R"html( filters successfully!</strong></p>
+            )html" + (rejectedEntries.length() ? String("<p style=\"color:#f87171\">Ignored (not a valid OUI/MAC): ") + rejectedEntries + "</p>" : String("")) + R"html(
             <p id="countdown">Switching to scanning mode in 5 seconds...</p>
         </div>
         <p>The device will now start scanning for your configured devices.</p>
@@ -3440,6 +3667,7 @@ void startConfigMode() {
     
     // API endpoint to lock/burn-in configuration
     server.on("/api/lock-config", HTTP_POST, [](AsyncWebServerRequest *request) {
+        String rejectedEntries;  // lines that are not a valid OUI/MAC
         lastConfigActivity = millis();
         
         if (isSerialConnected()) {
@@ -3490,7 +3718,13 @@ void startConfigMode() {
                     oui.trim();
                     oui.replace("\r", ""); // Remove carriage returns
                     
+                    if (oui.length() > 0 && !isValidMAC(oui)) {
+                        if (rejectedEntries.length()) rejectedEntries += ", ";
+                        rejectedEntries += oui;
+                    }
                     if (oui.length() > 0 && isValidMAC(oui)) {
+                        normalizeMACAddress(oui);
+                        oui.toUpperCase();
                         TargetFilter filter;
                         filter.identifier = oui;
                         filter.description = "OUI: " + oui;
@@ -3531,7 +3765,13 @@ void startConfigMode() {
                     mac.trim();
                     mac.replace("\r", ""); // Remove carriage returns
                     
+                    if (mac.length() > 0 && !isValidMAC(mac)) {
+                        if (rejectedEntries.length()) rejectedEntries += ", ";
+                        rejectedEntries += mac;
+                    }
                     if (mac.length() > 0 && isValidMAC(mac)) {
+                        normalizeMACAddress(mac);
+                        mac.toUpperCase();
                         TargetFilter filter;
                         filter.identifier = mac;
                         filter.description = "MAC: " + mac;
@@ -3794,6 +4034,7 @@ class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
         
         String mac = advertisedDevice->getAddress().toString().c_str();
         int rssi = advertisedDevice->getRSSI();
+        bleNoteHeard(mac, advertisedDevice->getName(), rssi);
         unsigned long currentMillis = millis();
 
         String matchedDescription;
@@ -4204,6 +4445,11 @@ void loop() {
     if (currentMode == SCANNING_MODE) {
         // Handle match detection messages (JSON output for API)
         if (newMatchFound) {
+            // CYD dashboard: event line + radar blip + 1s screen flash
+            // (the visual stand-in for the buzzer). No-op on the XIAO.
+            DisplayUI::notifyDetection("%s %s %ddBm", matchType.c_str(),
+                                       detectedMAC.c_str(), detectedRSSI);
+            DisplayUI::radarPing(detectedMAC.c_str(), detectedRSSI, true);
             if (isSerialConnected()) {
                 String alias = getDeviceAlias(detectedMAC);
                 
@@ -4225,6 +4471,14 @@ void loop() {
             delay(10);
             pBLEScan->start(2, nullptr, false);
             lastScanTime = currentMillis;
+        }
+
+        // Scan health on serial every 10s (see bleAdvertsHeard).
+        static unsigned long lastHeardReport = 0;
+        if (currentMillis - lastHeardReport >= 10000) {
+            lastHeardReport = currentMillis;
+            Serial.printf("[DETECTOR] BLE adverts heard: %lu, unique devices: %d\n",
+                          (unsigned long)bleAdvertsHeard, bleNearbyCount);
         }
 
         // Auto-save detected devices to NVS every 10 seconds
