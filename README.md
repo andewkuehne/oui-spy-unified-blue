@@ -1,8 +1,8 @@
 # OUI SPY
 
-Multi-mode surveillance detection and BLE intelligence firmware for the **Seeed Studio XIAO ESP32-S3**.
+Multi-mode surveillance detection and BLE intelligence firmware for the **Seeed Studio XIAO ESP32-S3** and the **ESP32 "Cheap Yellow Display" (CYD)** touchscreen boards.
 
-One device. Six firmware modes. Select from a boot menu, reboot, and go.
+One device. Six firmware modes. Select from a boot menu, reboot, and go. On a CYD the menu and a live dashboard for each mode are on the touchscreen — see [CYD Touchscreen Boards](#cyd-touchscreen-boards).
 
 ---
 
@@ -13,6 +13,8 @@ Flash straight from the browser — no Python, no PlatformIO, no drivers to thin
 **https://colonelpanichacks.github.io/oui-spy-unified-blue/**
 
 Chrome, Edge, or Opera on desktop (Web Serial API). Plug in the XIAO ESP32-S3 with a USB-C data cable, click **Connect & Flash**, pick the serial port. The page always serves the latest firmware committed to `master`.
+
+The web flasher serves the XIAO build only. CYD boards are built and flashed with PlatformIO — see [CYD Touchscreen Boards](#cyd-touchscreen-boards).
 
 ---
 
@@ -68,6 +70,27 @@ detection: remove it with the `x` on its signature line, or wipe it via
 **Clear All Filters**. Manually adding `0x0D53`, `0xFD5F`, or a Luxottica MAC
 via the target config UI still triggers via the normal single-signature
 filter path with its normal badge.
+
+**MAC entry.** The OUI and MAC boxes accept `AA:BB:CC:DD:EE:FF`, `AA-BB-…`,
+`AABBCCDDEEFF` or `aabb.ccdd.eeff`; entries are stored in colon form. Any line
+that still isn't a valid OUI or MAC is listed on the save confirmation page
+instead of being dropped silently. Note the detector matches **BLE** addresses
+only — a device's Wi-Fi MAC (as shown by a router or companion app) is a
+different address and will never match.
+
+**USB serial commands** (115200 baud), useful for managing filters without the
+web UI and for finding a device's real BLE address:
+
+| Command | Action |
+|---|---|
+| `CMD:ADD_MAC <mac>` | Add a full-MAC filter and save it to NVS |
+| `CMD:REMOVE_MAC <mac>` | Remove a MAC/OUI filter and save |
+| `CMD:LIST_FILTERS` | Print every configured filter |
+| `CMD:NEARBY` | Every BLE device heard recently, newest first: MAC, RSSI, seconds since heard, advertised name |
+| `CMD:STATUS` / `CMD:VERSION` / `CMD:DUMP_PREV` / `CMD:DUMP_LIVE` / `CMD:CLEAR_PREV` / `CMD:CLEAR_LIVE` | Session telemetry and replay (as before) |
+
+While scanning, the detector also prints `[DETECTOR] BLE adverts heard: N, unique devices: M`
+every 10 s, so "nothing matched" can be told apart from "nothing received".
 
 **Burn-in is reversible.** Locking the config disables the AP permanently, but
 holding BOOT during power-on clears the lock and restores config mode. Older
@@ -196,13 +219,50 @@ Each mode creates its own AP. When switching modes, **your phone/laptop will aut
 | GPIO 21 | NeoPixel LED |
 | GPIO 0 | BOOT button (hold 1.5s to return to mode selector) |
 
+For CYD boards see [CYD Touchscreen Boards](#cyd-touchscreen-boards).
+
+---
+
+## CYD Touchscreen Boards
+
+The same six modes run on ESP32 "Cheap Yellow Display" boards (plain ESP32-WROOM-32, 4 MB flash, no PSRAM), with the boot menu and a live dashboard for each mode on the touchscreen.
+
+| PlatformIO env | Board | Display / touch | Status |
+|---|---|---|---|
+| `cyd_2432s028_2usb` | ESP32-2432S028, **micro-USB + USB-C** ("CYD2USB") | 2.8" ST7789 via TFT_eSPI, XPT2046 resistive | Verified on hardware |
+| `cyd_2432s028` | ESP32-2432S028, single micro-USB | 2.8" ILI9341 via LovyanGFX, XPT2046 resistive | Untested |
+| `cyd_2432s024` | ESP32-2432S024 | 2.4" ILI9341, CST816 capacitive | Untested |
+| `cyd_3248s035` | ESP32-3248S035 | 3.5" ILI9488 480×320 | Untested |
+| `cyd_2432s028_2usb_calib` | Dual-USB CYD | Calibration screen only | Diagnostic |
+
+Check which 2432S028 you have: the dual-USB revision uses an ST7789 panel and **needs** the `_2usb` env — the ILI9341 build shows scrambled colours and orientation on it.
+
+```bash
+pio run -e cyd_2432s028_2usb -t upload        # build + flash
+pio device monitor                            # serial output (115200 baud)
+```
+
+**On the touchscreen** (portrait, USB ports at the bottom):
+
+- **Boot menu** — tap a mode to select it and reboot (same as the web selector, which still runs alongside it).
+- **Mode dashboard** — mode name, AP SSID/IP, three stat rows, and the mode's live status lines.
+- **Events / Radar** — the bottom half is either a scrolling, timestamped event log or a proximity radar; tap it to switch. Detector and Foxhunter open on the radar, the other modes on the event log. On the radar, distance from the centre is signal strength (stronger = closer) and each device keeps a fixed bearing derived from its ID — a single antenna has no direction information. Blips fade after 20 s and drop after 60 s.
+- **Detection flash** — a Detector hit, or Foxhunter acquiring/reacquiring its target, inverts the whole screen for 1 s and adds a highlighted event. Foxhunter also logs RSSI every 2 s and when the target is lost.
+- **MENU** — tap the red button in the top-right corner to return to the boot menu. CYD boards have no usable BOOT button, so this (or the web selector) is the way back.
+
+**Sound.** There is no buzzer on the board. Beeps are sent to GPIO26, which drives the amplified 2-pin **SPEAK** connector next to the USB ports — plug in a small 8 Ω speaker (0.5–1 W) or a passive piezo. Without one, the screen flash is the alert.
+
+**Limits vs. the XIAO.** No PSRAM, so detection tables are capped at 64 entries and the PCAP / BLE Sniff session buffers are smaller. The CYD's antenna is printed on the ESP32 module (no u.FL connector); for range use the XIAO with its external antenna.
+
+**Calibration build.** `cyd_2432s028_2usb_calib` fills the screen with four labelled colour quadrants; touching one flashes it and prints the raw and mapped touch coordinates to serial. Use it to check colours, edge clipping and touch mapping on a new board revision. Build with `-DOUISPY_CALIB_ROTATION_SWEEP` to also cycle through every display rotation.
+
 ---
 
 ## Boot Selector
 
 On power-up, the device starts a WiFi access point (`oui-spy` / `ouispy123` by default) and serves a firmware selector at `192.168.4.1`. Pick a mode, the device stores the selection in NVS, and reboots into it.
 
-- **Return to menu:** Hold the BOOT button for 1.5 seconds at any time
+- **Return to menu:** Hold the BOOT button for 1.5 seconds at any time (on a CYD: tap **MENU** on the screen)
 - **AP credentials:** Configurable SSID and password from the selector page, stored in NVS
 - **Buzzer toggle:** Enable/disable the boot buzzer globally from the selector menu
 - **MAC randomization:** Device MAC is randomized on every boot
@@ -336,6 +396,8 @@ pio run -t upload           # flash directly
 pio device monitor          # serial output (115200 baud)
 ```
 
+`pio run` with no `-e` builds every environment; add `-e seeed_xiao_esp32s3` for just the XIAO, or `-e cyd_2432s028_2usb` (etc.) for a CYD board.
+
 The build output lands in `.pio/build/seeed_xiao_esp32s3/firmware.bin`. To use the flasher script instead, copy the build artifacts into `firmware/`:
 
 ```bash
@@ -351,8 +413,12 @@ cp .pio/build/seeed_xiao_esp32s3/firmware.bin firmware/oui-spy-unified-blue.bin
 - `ESP Async WebServer` + `AsyncTCP` -- web interfaces
 - `ArduinoJson` -- JSON serialization
 - `Adafruit NeoPixel` -- LED control
+- `TFT_eSPI` -- display, dual-USB CYD (configured entirely by `-D` flags in `platformio.ini`)
+- `LovyanGFX` -- display + touch, other CYD boards
 
-**Flash layout:** Custom partition table with ~6MB app + ~2MB LittleFS data. See `partitions.csv`.
+**Flash layout:** Custom partition table with ~6MB app + ~2MB LittleFS data. See `partitions.csv` (XIAO) and `partitions_cyd.csv` (4 MB CYD boards: ~2.6 MB app + ~1.25 MB SPIFFS).
+
+**Adding a board:** board-specific pins, panel, touch controller and RAM caps live in `src/boards.h`, selected by a `-DOUISPY_BOARD_*` flag; the on-screen UI is `src/display.cpp`.
 
 ---
 
